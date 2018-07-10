@@ -260,10 +260,6 @@ int be_mysql_getuser(void *handle, const char *username, const char *password, c
 			setting[29] = '\0';
 			*phash = NULL;
 			crypt_ra(password, setting, (void **)&data, &size);
-			printf("password %s\n", password);
-			printf("hash %s\n", v);
-			printf("data %.*s\n", size, data);
-			printf("size %d\n", size);
 			if (strncmp(v, data, size) == 0) {
 				free(data);
 				return BACKEND_ALLOW;
