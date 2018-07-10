@@ -38,6 +38,7 @@
 #include "log.h"
 #include "hash.h"
 #include "backends.h"
+#include <ow-crypt.h>
 
 struct mysql_backend {
 	MYSQL *mysql;
@@ -50,6 +51,7 @@ struct mysql_backend {
 	char *userquery; //MUST return 1 row, 1 column
 	char *superquery; //MUST return 1 row, 1 column,[0, 1]
 	char *aclquery; //MAY return n rows, 1 column, string
+	bool bcrypt;
 };
 
 static char *get_bool(char *option, char *defval)
@@ -66,7 +68,7 @@ static char *get_bool(char *option, char *defval)
 void *be_mysql_init()
 {
 	struct mysql_backend *conf;
-	char *host, *user, *pass, *dbname, *p;
+	char *host, *user, *pass, *dbname, *hash, *p;
 	char *ssl_ca, *ssl_capath, *ssl_cert, *ssl_cipher, *ssl_key;
 	char *userquery;
 	char *opt_flag;
@@ -82,6 +84,7 @@ void *be_mysql_init()
 	user = p_stab("user");
 	pass = p_stab("pass");
 	dbname = p_stab("dbname");
+	hash = p_stab("hash");
 	
 	opt_flag = get_bool("ssl_enabled", "false");
 	if (!strcmp("true", opt_flag)) {
@@ -121,6 +124,10 @@ void *be_mysql_init()
 	conf->userquery = userquery;
 	conf->superquery = p_stab("superquery");
 	conf->aclquery = p_stab("aclquery");
+	conf->bcrypt = false;
+	if (hash && strcmp(hash, "bcrypt") == 0) {
+		conf->bcrypt = true;
+	}
 
 	if(ssl_enabled){
 		mysql_ssl_set(conf->mysql, ssl_key, ssl_cert, ssl_ca, ssl_capath, ssl_cipher);
@@ -177,6 +184,10 @@ static char *escape(void *handle, const char *value, long *vlen)
 static bool auto_connect(struct mysql_backend *conf)
 {
 	if (conf->auto_connect) {
+		fprintf(stderr, "mysql auto reconnecting\n");
+		mysql_close(conf->mysql);
+		conf->mysql = mysql_init(NULL);
+
 		if (!mysql_real_connect(conf->mysql, conf->host, conf->user, conf->pass, conf->dbname, conf->port, NULL, 0)) {
 			fprintf(stderr, "do auto_connect but %s\n", mysql_error(conf->mysql));
 			return false;
@@ -198,7 +209,7 @@ int be_mysql_getuser(void *handle, const char *username, const char *password, c
 		return BACKEND_DEFER;
 
 	if (mysql_ping(conf->mysql)) {
-		fprintf(stderr, "%s\n", mysql_error(conf->mysql));
+		fprintf(stderr, "be_mysql_getuser mysql_ping %s\n", mysql_error(conf->mysql));
 		if (!auto_connect(conf)) {
 			return BACKEND_ERROR;
 		}
@@ -215,31 +226,58 @@ int be_mysql_getuser(void *handle, const char *username, const char *password, c
 
 	if (mysql_query(conf->mysql, query)) {
 		fprintf(stderr, "%s\n", mysql_error(conf->mysql));
-		goto out;
+		free(query);
+		return BACKEND_ERROR;
 	}
 	res = mysql_store_result(conf->mysql);
 	if ((nrows = mysql_num_rows(res)) != 1) {
 		//DEBUG fprintf(stderr, "rowcount = %ld; not ok\n", nrows);
-		goto out;
+		mysql_free_result(res);
+		free(query);
+		return BACKEND_ERROR;
 	}
 	if (mysql_num_fields(res) != 1) {
 		//DEBUG fprintf(stderr, "numfields not ok\n");
-		goto out;
+		mysql_free_result(res);
+		free(query);
+		return BACKEND_ERROR;
 	}
 	if ((rowdata = mysql_fetch_row(res)) == NULL) {
-		goto out;
+		mysql_free_result(res);
+		free(query);
+		return BACKEND_ERROR;
 	}
 	v = rowdata[0];
-	value = (v) ? strdup(v) : NULL;
 
-
-out:
-
-	mysql_free_result(res);
-	free(query);
-
-	*phash = value;
-	return BACKEND_DEFER;
+	if (conf->bcrypt) {
+		mysql_free_result(res);
+		free(query);
+		if (v) {
+			char setting[30];
+			void *data = NULL;
+			int size = 0xDEADBEEF;
+			memcpy(setting, v, 29);
+			setting[29] = '\0';
+			*phash = NULL;
+			crypt_ra(password, setting, (void **)&data, &size);
+			printf("password %s\n", password);
+			printf("hash %s\n", v);
+			printf("data %.*s\n", size, data);
+			printf("size %d\n", size);
+			if (strncmp(v, data, size) == 0) {
+				free(data);
+				return BACKEND_ALLOW;
+			}
+		}
+		return BACKEND_DENY;
+	}
+	else {
+		value = (v) ? strdup(v) : NULL;
+		mysql_free_result(res);
+		free(query);
+		*phash = value;
+		return BACKEND_DEFER;
+	}
 }
 
 /*
@@ -260,7 +298,7 @@ int be_mysql_superuser(void *handle, const char *username)
 		return BACKEND_DEFER;
 
 	if (mysql_ping(conf->mysql)) {
-		fprintf(stderr, "%s\n", mysql_error(conf->mysql));
+		fprintf(stderr, "be_mysql_superuser mysql_ping: %s\n", mysql_error(conf->mysql));
 		if (!auto_connect(conf)) {
 			return (BACKEND_ERROR);
 		}
@@ -326,7 +364,7 @@ int be_mysql_aclcheck(void *handle, const char *clientid, const char *username, 
 		return BACKEND_DEFER;
 
 	if (mysql_ping(conf->mysql)) {
-		fprintf(stderr, "%s\n", mysql_error(conf->mysql));
+		fprintf(stderr, "be_mysql_aclcheck mysql_ping %s\n", mysql_error(conf->mysql));
 		if (!auto_connect(conf)) {
 			return (BACKEND_ERROR);
 		}

@@ -27,12 +27,14 @@ ifneq ($(BACKEND_CDB),no)
 endif
 
 ifneq ($(BACKEND_MYSQL),no)
+	BCRYPT_DIR = crypt_blowfish-1.3
+	BCRYPT_OBJS = $(BCRYPT_DIR)/crypt_blowfish.o $(BCRYPT_DIR)/crypt_gensalt.o $(BCRYPT_DIR)/wrapper.o
 	BACKENDS += -DBE_MYSQL
 	BACKENDSTR += MySQL
 
-	BE_CFLAGS += `mysql_config --cflags`
+	BE_CFLAGS += `mysql_config --cflags` -I$(BCRYPT_DIR)
 	BE_LDADD += `mysql_config --libs`
-	OBJS += be-mysql.o
+	OBJS += be-mysql.o $(BCRYPT_OBJS)
 endif
 
 ifneq ($(BACKEND_SQLITE),no)
