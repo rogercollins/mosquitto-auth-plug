@@ -230,6 +230,12 @@ int be_mysql_getuser(void *handle, const char *username, const char *password, c
 		return BACKEND_ERROR;
 	}
 	res = mysql_store_result(conf->mysql);
+    if (res == NULL) {
+        _log(LOG_DEBUG, "mysql: getuser: mysql_store_result NULL");
+        mysql_free_result(res);
+        free(query);
+        return BACKEND_ERROR;
+    }
 	if ((nrows = mysql_num_rows(res)) != 1) {
 		//DEBUG fprintf(stderr, "rowcount = %ld; not ok\n", nrows);
 		mysql_free_result(res);
